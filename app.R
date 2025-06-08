@@ -117,7 +117,18 @@ ui <- fluidPage(
     tabPanel("Gene View",
              sidebarLayout(
                sidebarPanel(
-                 textInput("gene_search", label = "Select or type a gene:"),
+                 selectizeInput(
+                   inputId = "gene_search",
+                   label = "Select or type a gene:",
+                   choices = NULL,
+                   selected = NULL,
+                   multiple = FALSE,
+                   options = list(
+                     placeholder = 'e.g. PCSK9 or ENSG00000169174',
+                     create = FALSE,
+                     maxOptions = 100
+                   )
+                 ),
                  helpText("• This view shows all traits where the queried gene is causal."),
                  br(),
                  downloadButton("download_gene_table", "Download Gene Table")
@@ -175,6 +186,29 @@ server <- function(input, output, session) {
     current_page("home")
     confirmed_trait(NULL)
     updateSelectizeInput(session, "trait", selected = "")
+  })
+  
+  # Initialize gene choices
+  observe({
+    gene_symbols <- unique(w_all$Symbol)
+    gene_ensembl <- unique(w_all$Ensembl)
+    
+    gene_symbols <- gene_symbols[!is.na(gene_symbols)]
+    gene_ensembl <- gene_ensembl[!is.na(gene_ensembl)]
+    
+    gene_choices <- c(
+      setNames(gene_symbols, gene_symbols),
+      setNames(gene_ensembl, gene_ensembl)
+    )
+    
+    gene_choices <- gene_choices[order(names(gene_choices))]
+    
+    updateSelectizeInput(
+      session,
+      "gene_search",
+      choices = gene_choices,
+      server = TRUE
+    )
   })
   
   output$main_display <- renderUI({
@@ -386,20 +420,38 @@ server <- function(input, output, session) {
     }
   )
   
-  # Gene View reactive data
+  # Gene View reactive data with improved matching
   gene_matched_data <- reactive({
     req(input$gene_search)
-    gene_input <- tolower(trimws(input$gene_search))
+    gene_input <- trimws(input$gene_search)
     
     if (gene_input == "") {
       return(data.frame())
     }
     
+    # Exact match first
     matched <- w_all %>%
       dplyr::filter(
-        tolower(Symbol) == gene_input |
-          tolower(Ensembl) == gene_input
+        Symbol == gene_input | Ensembl == gene_input
       )
+    
+    # If no exact match, try case-insensitive
+    if (nrow(matched) == 0) {
+      matched <- w_all %>%
+        dplyr::filter(
+          tolower(Symbol) == tolower(gene_input) |
+            tolower(Ensembl) == tolower(gene_input)
+        )
+    }
+    
+    # If still no match, try partial matching
+    if (nrow(matched) == 0) {
+      matched <- w_all %>%
+        dplyr::filter(
+          grepl(gene_input, Symbol, ignore.case = TRUE) |
+            grepl(gene_input, Ensembl, ignore.case = TRUE)
+        )
+    }
     
     return(matched)
   })
@@ -423,14 +475,14 @@ server <- function(input, output, session) {
   output$gene_msg <- renderText({
     matched <- gene_matched_data()
     
-    if (input$gene_search == "" || is.null(input$gene_search)) {
+    if (is.null(input$gene_search) || input$gene_search == "") {
       return("")
     }
     
     if (nrow(matched) == 0) {
       "Target gene is currently not causal in our database."
     } else {
-      ""
+      paste("Found", nrow(matched), "records for", input$gene_search)
     }
   })
   
