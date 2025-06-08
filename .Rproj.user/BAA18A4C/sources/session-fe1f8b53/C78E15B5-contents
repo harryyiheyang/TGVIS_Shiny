@@ -1,0 +1,127 @@
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(EnsDb.Hsapiens.v79)
+library(locuszoomr)
+library(ggplot2)
+library(ggrepel)
+library(glue)
+options(bitmapType = "cairo")
+GTF <- readRDS("~/MR_CGTS/GTF_V48.rds")
+indcluster=readRDS("~/TGVIS_Shiny/BMI/Blockinfo.rds")
+V=read_parquet("~/1000G/7M_BP_3738.parquet")
+V$Locus=paste0(V$CHR,":",V$BP)
+w <- readRDS("~/MR_CGTS/BMI_analysis/MVMR/v10_susieselect_inf.rds")%>%do.call(rbind,.)%>%dplyr::filter(Type=="Exposure",cs.pratt>0.15)%>%dplyr::mutate(MarkerName=paste0(CHR,":",BP))%>%mutate(Identifier=paste0(MarkerName,":CS",cs))%>%dplyr::select(Identifier,Locus=MarkerName,Variable,CS.PIP=cs.pip,CS.Pratt=cs.pratt,xQTL,CHR,BP,cs)
+w=merge(w,V[,c("Locus","BP38")],by="Locus")
+w <- w |> separate(Variable, into = c("Gene", "Tissue"), sep = "\\*")
+w$Type <- "eGene";w$Spling <- ""
+for (i in seq_len(nrow(w))) {
+gene_str <- w$Gene[i]
+if (grepl("clu", gene_str)) {
+w$Type[i] <- "sGene"
+w$Spling[i] <- gene_str
+}
+ensg_match <- regmatches(gene_str, regexpr("ENSG[0-9]+", gene_str))
+if (length(ensg_match) > 0) {
+w$Gene[i] <- ensg_match
+} else {
+w$Gene[i] <- NA  
+}
+}
+
+ind=match(w$Gene,GTF$gene_id)
+w$GeneSymbol=GTF$gene_name[ind];w$GenePos=ifelse(GTF$strand[ind]=="+",GTF$start[ind],GTF$end[ind])
+ind=which(is.na(w$GeneSymbol)==1)
+if(length(ind)>0){
+w$GeneSymbol[ind]=w$Gene[ind]
+w$GenePos[ind]=w$BP38[ind]
+}
+w=dplyr::select(w,Identifier,Locus,Gene,GeneSymbol,Type,Tissue,xQTL,CS.Pratt,CS.PIP,CHR,BP=BP38,GenePos,Splicing=Spling,cs)
+w$Locus=paste0(w$CHR,":",w$BP)
+w$Identifier=paste0(w$Locus,":CS",w$cs)
+w$cs=NULL
+GeneResult=w
+Blockinfo=indcluster
+window=1e6
+ens_db=EnsDb.Hsapiens.v79
+Locus=unique(w$Locus)
+colors=c("#35978F","#8C510A", "#80CDC1","#BF812D","#C7EAE5","#DFC27D")
+saveRDS(GeneResult,"~/TGVIS_Shiny/BMI/FineMap.rds")
+
+
+for(i in 1:length(unique(w$Locus))){
+parts <- strsplit(Locus[i], ":")[[1]]
+Chr <- as.integer(parts[1])
+POS38 <- as.integer(parts[2])
+
+in_block <- Blockinfo$CHR == Chr & abs(Blockinfo$BP - POS38) < window
+block_center <- Blockinfo$BP[which(in_block)[1]]
+GeneResult_sub <- GeneResult %>% dplyr::filter(CHR == Chr, abs(BP - block_center) < window)
+summary_data <- GeneResult_sub %>%
+mutate(
+  chrom = CHR,
+  pos = GenePos,
+  rsid = GeneSymbol,
+  p = 10^(-CS.Pratt),
+  Pratt = CS.Pratt
+) %>%
+arrange(chrom, pos, rsid)
+summary_data=summary_data[!duplicated(summary_data$Gene),]
+
+is_error = FALSE
+tryCatch({
+  loc <- locus(
+    data = summary_data[, c("rsid", "chrom", "pos", "p", "Pratt")],
+    gene = Blockinfo$Mapping[which(in_block)[1]],
+    flank  = 1e6,
+    ens_db = ens_db
+  )
+}, error = function(e) {
+  message("Error generating locus for Locus = ", Locus[i], ": ", e$message)
+  is_error <<- TRUE  # 设置为全局 TRUE，避免局部作用域出错
+})
+
+TSS <- with(genes(EnsDb.Hsapiens.v79, filter = GeneNameFilter(Blockinfo$Mapping[which(in_block)[1]])), ifelse(strand == "+", start, end))
+TSS=TSS[1]
+
+plot <- ggplot(summary_data, aes(x = pos/1e6, y = Pratt)) +
+        geom_hline(yintercept = 0, color = "white", size = 0.4) +
+        geom_point(aes(fill = Identifier), shape = 21, size = 3, color = "black") +
+        geom_text_repel(
+          aes(label = rsid),
+          size = 3,
+          box.padding = 0.25,
+          point.padding = 0.15,
+          segment.color = "black",
+          segment.size = 0.3,
+          min.segment.length = 0,
+          nudge_y = 0.05,
+          arrow = grid::arrow(type = "open", length = unit(0.1, "inches"))
+        ) +
+        scale_fill_manual(values=colors) +
+        scale_x_continuous(limits = loc$xrange/1e6) +
+        xlab(NULL) +
+        ylab("Pratt index of credible set") +
+        theme_bw() +
+        theme(
+          panel.grid = element_blank(),           # 移除网格
+          panel.border = element_blank(),         # 移除外框
+          axis.line = element_line(color = "black"),  # 添加xy轴线
+          axis.ticks = element_line(color = "black"),
+          legend.title = element_blank(),
+          legend.position = c(0.01, 0.01),
+          legend.justification = c(0.01, 0.01),
+          plot.title = element_text(hjust = 0.5)
+        )
+
+if(is_error==F){
+png(glue("~/TGVIS_Figure/BMI/FineMap_{Locus[i]}.png"),width=10,height=8,units="in",res=200)
+print(gg_addgenes(plot,loc,maxrows=7,gene_col = '#004e66', exon_col = '#004e66', exon_border = '#004e66'))
+dev.off()
+}else{
+png(glue("~/TGVIS_Figure/BMI/FineMap_{Locus[i]}.png"),width=10,height=8,units="in",res=200)
+print(plot)
+dev.off()
+}
+}

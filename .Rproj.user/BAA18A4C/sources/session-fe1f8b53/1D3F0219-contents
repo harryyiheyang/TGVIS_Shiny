@@ -1,0 +1,175 @@
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+library(glue)
+library(grid)
+options(bitmapType="cairo")
+mse=function(B,theta){
+p=dim(B)[2]
+q=dim(B)[3]
+mse=c(1:q)
+for(i in 1:q){
+  mse[i]=mean(sqrt(rowSums(t(t(B[,,i])-theta)^2)))
+}
+return(mse)
+}
+
+median.mse=function(B,theta){
+p=dim(B)[2]
+q=dim(B)[3]
+mse=c(1:q)
+for(i in 1:q){
+  mse[i]=median(sqrt(rowSums(t(t(B[,,i])-theta)^2)))
+}
+return(mse)
+}
+
+colMedian=function(A){
+a=apply(A,2,median)
+return(a)
+}
+
+truepositive=function(A,theta){
+simu=dim(A)[1];p=dim(A)[2];method=dim(A)[3]
+true0=which(theta==0)
+true1=which(theta!=0)
+TPVec=TNVec=c(1:method)
+for(i in 1:method){
+  Ai=A[,,i]
+  Ai0=(Ai==0)
+  Ai1=(Ai!=0)
+  tpi=rowMeans(Ai1[,true1])
+  tni=rowMeans(Ai0[,true0])
+  TPVec[i]=mean(tpi==1)
+  TNVec[i]=mean(tni==1)
+}
+return(list(TPVec=TPVec,TNVec=TNVec))
+}
+
+colors=c("#004e66","#01665E","#22857D","#79C8BC","#A6DCD4","white","#EBD6A3","#DCBC75","#C79242","#AC6F20","#8C510A" )
+
+for(SSAM in 1:4){
+############################################################################################################
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(MSE=median.mse(Btheta[SSAM,1:499,,],theta0),Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = var(exposure)"
+ZA1=ZA
+
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP05.RData"))
+SAM=SSAM
+ZA=data.frame(MSE=median.mse(Btheta[SSAM,1:499,,],theta0),Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.5 * var(exposure)"
+ZA1=rbind(ZA1,ZA)
+
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP025.RData"))
+SAM=SSAM
+ZA=data.frame(MSE=median.mse(Btheta[SSAM,1:499,,],theta0),Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.25 * var(exposure)"
+ZA1=rbind(ZA1,ZA)
+
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP01.RData"))
+SAM=SSAM
+ZA=data.frame(MSE=median.mse(Btheta[SSAM,1:499,,],theta0),Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.1 * var(exposure)"
+ZA1=rbind(ZA1,ZA)
+
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR0-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(MSE=median.mse(Btheta[SSAM,1:499,,],theta0),Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0"
+ZA1=rbind(ZA1,ZA)
+write.csv(ZA1,glue("~/MR_CGTS/SourceData/VaryingVarInf_RMSE_{SAM}.csv"),row.names=F)
+
+plot1=ggplot(ZA1, aes(y = Method, x = MSE, fill = Method)) +theme(plot.title = element_text(size = 15),strip.text = element_text(size = 12),axis.title = element_text(size = 12),axis.text = element_text(size = 12))+
+  geom_bar(stat = "identity", position = position_dodge(), color="black") +
+  facet_grid(~case)+
+  geom_text(aes(label = sprintf("%.3f", MSE)), position = position_dodge(width = 0.9), hjust = -0.1) +
+  labs(x = "Mean Square Error", title = "A. Mean Square Error of Causal Effect Estimate") +
+  scale_fill_brewer(palette="BrBG") +
+  guides(fill="none", color="none") +
+  scale_x_continuous(limits = c(0,2),breaks=seq(0,2,by=0.5))+
+  theme(axis.title.y = element_blank())
+
+########################################################################
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TNVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = var(exposure)"
+ZA1=ZA
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP05.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TNVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.5 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP025.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TNVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.25 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP01.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TNVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.1 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR0-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TNVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0"
+ZA1=rbind(ZA,ZA1)
+write.csv(ZA1,glue("~/MR_CGTS/SourceData/VaryingVarInf_TN_{SAM}.csv"),row.names=F)
+
+plot2=ggplot(ZA1, aes(y = Method, x = power, fill = Method)) +theme(plot.title = element_text(size = 15),strip.text = element_text(size = 12),axis.title = element_text(size = 12),axis.text = element_text(size = 12))+
+  geom_bar(stat = "identity", position = position_dodge(), color="black") +
+  facet_grid(~case)+
+  geom_text(aes(label = sprintf("%.3f", power)), position = position_dodge(width = 0.9), hjust = -0.1) +
+  labs(title = "B. True Negative Rate of Removing All Non-Causal Tissue-Gene Pairs", x= "Causal Effect Estimate") +
+  scale_fill_brewer(palette="BrBG") +
+  guides(fill="none", color="none") +
+  scale_x_continuous(limits = c(0,1.1),breaks=seq(0,1.1,by=0.5))+
+  theme(axis.title.y = element_blank())
+
+
+########################################################################
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TPVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = var(exposure)"
+ZA1=ZA
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP05.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TPVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.5 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP025.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TPVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.25 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR1-VBHP01.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TPVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0.1 * var(exposure)"
+ZA1=rbind(ZA,ZA1)
+load(glue("~/Mr.Jones/1/main2/AR05-Zero2-UR0-BR0-URvar1-URatio005-Causal-nout500k-p100-hy0005-hxada-m400.RData"))
+SAM=SSAM
+ZA=data.frame(power=truepositive(Brj[SSAM,1:499,,],theta0)$TPVec,Method=ordered(c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS"),levels=c("cisIVW","Grant2022","cTWAS","TGFM","TGVIS")))
+ZA$case="var(inf) = 0"
+ZA1=rbind(ZA,ZA1)
+write.csv(ZA1,glue("~/MR_CGTS/SourceData/VaryingVarInf_TP_{SAM}.csv"),row.names=F)
+
+plot3=ggplot(ZA1, aes(y = Method, x = power, fill = Method)) +theme(plot.title = element_text(size = 15),strip.text = element_text(size = 12),axis.title = element_text(size = 12),axis.text = element_text(size = 12))+
+  geom_bar(stat = "identity", position = position_dodge(), color="black") +
+  facet_grid(~case)+
+  geom_text(aes(label = sprintf("%.3f", power)), position = position_dodge(width = 0.9), hjust = -0.1) +
+  labs(title = "C. True Positive Rate of Identifying All Causal Tissue-Gene Pairs", x= "Causal Effect Estimate") +
+  scale_fill_brewer(palette="BrBG") +
+  guides(fill="none", color="none") +
+  scale_x_continuous(limits = c(0,1.1),breaks=seq(0,1.1,by=0.5))+
+  theme(axis.title.y = element_blank())
+
+#svg(glue("~/Mr.Jones/1/Inf_Zero_{SSAM}_V3X1.svg"),width=16,height=8)
+pdf(glue("~/Mr.Jones/1/Inf_Zero_{SSAM}_V3X1.pdf"),width=16,height=8)
+egg::ggarrange(plot1,plot2,plot3,nrow=3)
+dev.off()
+}

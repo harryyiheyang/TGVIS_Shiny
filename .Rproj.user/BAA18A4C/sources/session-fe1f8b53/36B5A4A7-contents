@@ -1,0 +1,263 @@
+library(glue)
+library(data.table)
+library(dplyr)
+library(org.Hs.eg.db)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(annotables,lib.loc="~/R/x86_64-pc-linux-gnu-library/4.2/")
+grch38
+options(bitmapType = "cairo")
+source("~/MR_CGTS/basicfunction.R")
+
+extract_and_replace <- function(df, GeneSymbolEnsemble) {
+# 找出含有 'clu' 的基因位置
+clu_indices <- grep("clu", df$Gene)
+
+# 提取含有 "ENSG" 的部分并替换
+df$Gene[clu_indices] <- sub(".*(ENSG\\d+).*", "\\1", df$Gene[clu_indices])
+
+# 使用 match 函数在 GeneSymbolEnsemble 中查找并替换
+match_indices <- match(df$Gene[clu_indices], GeneSymbolEnsemble$Ensembl)
+df$Gene[clu_indices] <- GeneSymbolEnsemble$Symbol[match_indices]
+
+return(df)
+}
+
+variant=arrow::read_parquet("~/1000G/9M_BP_3738.parquet")
+variant$MarkerName=paste0(variant$CHR,":",variant$BP)
+tissue=readRDS("~/MR_CGTS/Tissue31.rds")
+#UVMR=readRDS("~/MR_CGTS/UVMRlist.rds")
+GeneSymbolEnsemble <- readRDS("~/MR_CGTS/GeneInformation.rds")
+Trait=c("PP","ALB","AAA","ALT","AST","Baso","Bilirubin","BMI","BUN","CAD","Cystatin","DBP","Eosino",
+"FPG","HB","HBA1C","HDL","LDL","Mono","Neutro","PLA","RBC","SBP","T2D",
+"TCh","TG","UA","VTE","WBC","sP","QTI","JTI","QRS","AF","ALP","HEG","eGFR","LYM","GGT","FFratio","APOA1","APOB","SHBG","PLE2","PLE1")
+Trait_FullName <- c("Pulse Pressure",
+      "Albumin",
+      "Abdominal Aortic Aneurysm",
+      "Alanine Aminotransferase",
+      "Aspartate Aminotransferase",
+      "Basophils",
+      "Total Bilirubin",
+      "Body Mass Index",
+      "Blood Urea Nitrogen",
+      "Coronary Artery Disease",
+      "Cystatin C",
+      "Diastolic Blood Pressure",
+      "Eosinophils",
+      "Fasting Plasma Glucose",
+      "Hemoglobin",
+      "Hemoglobin A1c",
+      "HDL Cholesterol",
+      "LDL Cholesterol",
+      "Monocytes",
+      "Neutrophils",
+      "Platelets",
+      "Red Blood Cells",
+      "Systolic Blood Pressure",
+      "Type 2 Diabetes",
+      "Total Cholesterol",
+      "Triglycerides",
+      "Urate",
+      "Venous Thromboembolism",
+      "White Blood Cells",
+      "Serum Phosphate",
+      "QT Interval",
+      "JT Interval",
+      "QRS Complex",
+      "Atrial Fibrillation",
+      "Alkaline Phosphatase",
+      "Standing Height",
+      "Creatinine-Based eGFR",
+      "Lymphocytes",
+      "Gamma-Glutamyl Transferase",
+      "FEV1/FVC Ratio",
+      "Apolipoprotein A1",
+      "Apolipoprotein B",
+      "Sex Hormone-Binding Globulin",
+      "Pleiotropy (SBP to DBP)",
+      "Pleiotropy (DBP to SBP)")
+W=readRDS("~/MR_CGTS/UVMRlist.rds")
+#W=W[which(W$P<(0.05/2e4)),]
+#W$Variable <- gsub("\\+Cortex$", "+Brain_Cortex", W$Variable )
+#W$Variable <- gsub("\\+Cerebellum$", "+Brain_Cerebellum", W$Variable )
+#W$Genetype <- ifelse(grepl("clu", W$Variable), "sGene", "eGene")
+#W[c("Gene", "Tissue")] <- do.call(rbind, strsplit(W$Variable, "\\+"))
+#W=extract_and_replace(W,GeneSymbolEnsemble)
+#saveRDS(W,"~/MR_CGTS/UVMRlist.rds")
+
+NovelTGVIS=NovelTGFM=list()
+for(i in 1:45){
+GG <- readRDS(glue("~/MR_CGTS/{Trait[i]}_analysis/Refine/susieselect_inf.rds"))  %>% Forcerbind(.) %>% group_by(cs,CHR,BP) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup() %>% dplyr::filter(cs.pratt>0.15)
+GG=GG[which(GG$Type!="SNP"),]
+GG$Variable <- gsub("\\+Cortex$", "+Brain_Cortex", GG$Variable )
+GG$Variable <- gsub("\\+Cerebellum$", "+Brain_Cerebellum", GG$Variable )
+GG$Identifier=paste0(GG$CHR,":",GG$BP,":",GG$Variable)
+GG=GG[!duplicated(GG$Identifier),]
+GG[c("Gene", "Tissue")] <- do.call(rbind, strsplit(GG$Variable, "\\+"))
+GG=extract_and_replace(GG,GeneSymbolEnsemble)
+GG$MarkerName=paste0(GG$CHR,":",GG$BP)
+#GG=merge(GG,variant[,c("MarkerName","BP38")],by="MarkerName",all.x=T)
+#GG$TSS=grch38$start[match(GG$Gene,grch38$symbol)]
+#GG$TES=grch38$end[match(GG$Gene,grch38$symbol)]
+GG$Identifier=paste0(GG$MarkerName,":CS",GG$cs)
+Gene12=names(table(GG$Identifier))[which(table(GG$Identifier)<=2)]
+GG1=GG[which(GG$Identifier%in%Gene12),]
+GG1=na.omit(GG1)
+WW=W[which(W$Trait==Trait[i]),]
+GG1=GG1[which(GG1$Gene%in%WW$Gene),]
+WW=WW[which(W$P<(0.05/2e4/31)),]
+a=intersect(WW$Gene,GG1$Gene)
+b=setdiff(GG$Gene,a)
+GG2=GG1[which(GG1$Gene%in%b),]
+NovelTGVIS[[i]]=data.frame(Total=length(unique(GG$Identifier)),Novel=length(unique(GG2$Identifier)),Trait=Trait_FullName[i])
+
+GG <- readRDS(glue("~/MR_CGTS/{Trait[i]}_analysis/Refine/tgfmselect.rds"))  %>% Forcerbind(.) %>% group_by(cs,CHR,BP) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup() %>% dplyr::filter(pip>0.5)
+GG=GG[which(GG$Type!="SNP"),]
+GG$Variable <- gsub("\\+Cortex$", "+Brain_Cortex", GG$Variable )
+GG$Variable <- gsub("\\+Cerebellum$", "+Brain_Cerebellum", GG$Variable )
+GG$Identifier=paste0(GG$CHR,":",GG$BP,":",GG$Variable)
+GG=GG[!duplicated(GG$Identifier),]
+GG[c("Gene", "Tissue")] <- do.call(rbind, strsplit(GG$Variable, "\\+"))
+GG=extract_and_replace(GG,GeneSymbolEnsemble)
+GG$MarkerName=paste0(GG$CHR,":",GG$BP)
+#GG=merge(GG,variant[,c("MarkerName","BP38")],by="MarkerName",all.x=T)
+#GG$TSS=grch38$start[match(GG$Gene,grch38$symbol)]
+#GG$TES=grch38$end[match(GG$Gene,grch38$symbol)]
+GG$Identifier=paste0(GG$MarkerName,":CS",GG$cs)
+Gene12=names(table(GG$Identifier))[which(table(GG$Identifier)<=2)]
+GG1=GG[which(GG$Identifier%in%Gene12),]
+GG1=na.omit(GG1)
+WW=W[which(W$Trait==Trait[i]),]
+GG1=GG1[which(GG1$Gene%in%WW$Gene),]
+WW=WW[which(W$P<(0.05/2e4/31)),]
+a=intersect(WW$Gene,GG1$Gene)
+b=setdiff(GG$Gene,a)
+GG2=GG1[which(GG1$Gene%in%b),]
+NovelTGFM[[i]]=data.frame(Total=length(unique(GG$Identifier)),Novel=length(unique(GG2$Identifier)),Trait=Trait_FullName[i])
+}
+
+NovelTGVIS=do.call(rbind,NovelTGVIS)
+NovelTGFM=do.call(rbind,NovelTGFM)
+
+a=c(1:45)
+names(a)=Trait_FullName
+for(i in 1:45){
+plink=fread(glue("~/MR_CGTS/{Trait[i]}_analysis/plinkfile/{Trait[i]}.clumped"))
+indcluster=MRBEEX::cluster_snps(plink[,c("SNP","CHR","BP","P")],window_size=1e6)
+a[i]=nrow(indcluster)
+}
+
+NovelTGVIS$Total_Fraction=NovelTGVIS$Total/a
+NovelTGVIS$Novel_Fraction=NovelTGVIS$Novel/a
+NovelTGFM$Total_Fraction=NovelTGFM$Total/a
+NovelTGFM$Novel_Fraction=NovelTGFM$Novel/a
+NovelTGVIS$Ratio=NovelTGVIS$Novel/NovelTGVIS$Total
+NovelTGFM$Ratio=NovelTGFM$Novel/NovelTGFM$Total
+
+NovelTGVIS1 <- NovelTGVIS %>%
+pivot_longer(cols = c(Total, Total_Fraction, Novel, Novel_Fraction), 
+             names_to = c(".value", "Type"),
+             names_sep = "_") %>%
+mutate(Type = ifelse(Type == "Fraction", "Proportion", "Number"))
+NovelTGVIS1$Type[is.na(NovelTGVIS1$Type)]="Number"
+
+NovelTGFM1 <- NovelTGFM %>%
+pivot_longer(cols = c(Total, Total_Fraction, Novel, Novel_Fraction), 
+             names_to = c(".value", "Type"),
+             names_sep = "_") %>%
+mutate(Type = ifelse(Type == "Fraction", "Proportion", "Number"))
+NovelTGFM1$Type[is.na(NovelTGFM1$Type)]="Number"
+
+NovelTGVIS1 <- NovelTGVIS1 %>%
+pivot_longer(cols = c(Total, Novel), 
+             names_to = "What", 
+             values_to = "results")
+
+NovelTGFM1 <- NovelTGFM1 %>%
+pivot_longer(cols = c(Total, Novel), 
+             names_to = "What", 
+             values_to = "results")
+
+NovelTGVIS1$What[which(NovelTGVIS1$What=="Novel")]="Likely Novel"
+NovelTGFM1$What[which(NovelTGFM1$What=="Novel")]="Likely Novel"
+
+
+plot1=ggplot(data = NovelTGVIS1, aes(x = results, y = Trait, fill = What)) +
+geom_bar(stat = "identity", position = position_dodge(),color="grey30") +
+facet_wrap(~Type, scales = "free_x", ncol = 2) +
+xlab("number of causal gene-tissue pairs") +
+theme(axis.text.y = element_text(size = rel(0.9)),
+      axis.title.y = element_blank(),
+      legend.position = c(0.35, 0.01),
+      legend.justification = c(0.35, 0.01),
+      legend.title = element_blank(),
+      panel.background = element_blank(),  panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+scale_fill_manual(values = c("#D7FFF1", "#008c9e"))#+scale_y_continuous(limits=c(0,0.5),breaks=seq(0,0.5,0.1))
+
+plot2=ggplot(data = NovelTGFM1, aes(x = results, y = Trait, fill = What)) +
+geom_bar(stat = "identity", position = position_dodge(),color="grey30") +
+facet_wrap(~Type, scales = "free_x", ncol = 2) +
+xlab("number of causal gene-tissue pairs") +
+theme(axis.text.y = element_text(size = rel(0.9)),
+      axis.title.y = element_blank(),
+      legend.position = c(0.35, 0.01),
+      legend.justification = c(0.35, 0.01),
+      legend.title = element_blank(),
+      panel.background = element_blank(),  panel.grid = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+scale_fill_manual(values = c("#fff1b9", "#f9c00c"))#+scale_y_continuous(limits=c(0,0.5),breaks=seq(0,0.5,0.1))
+
+
+NovelTGVIS=NovelTGFM=list()
+for(i in 1:45){
+GG <- readRDS(glue("~/MR_CGTS/{Trait[i]}_analysis/Refine/susieselect_inf.rds"))  %>% Forcerbind(.) %>% group_by(cs,CHR,BP) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup() %>% dplyr::filter(cs.pratt>0.15)
+GG=GG[which(GG$Type=="SNP"),]
+GG$Identifier=paste0(GG$CHR,":",GG$BP)
+GG=GG[!duplicated(GG$Identifier),]
+NovelTGVIS[[i]]=data.frame(Total=length(unique(GG$Identifier)),Trait=Trait_FullName[i])
+
+GG <- readRDS(glue("~/MR_CGTS/{Trait[i]}_analysis/Refine/tgfmselect.rds"))  %>% Forcerbind(.) %>% group_by(cs,CHR,BP) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup() %>% dplyr::filter(pip>0.5)
+GG=GG[which(GG$Type=="SNP"),]
+GG$Identifier=paste0(GG$CHR,":",GG$BP)
+GG=GG[!duplicated(GG$Identifier),]
+NovelTGFM[[i]]=data.frame(Total=length(unique(GG$Identifier)),Trait=Trait_FullName[i])
+}
+
+NovelTGVIS=do.call(rbind,NovelTGVIS)
+NovelTGFM=do.call(rbind,NovelTGFM)
+
+NovelTGVIS$Total_Fraction=NovelTGVIS$Total/a
+NovelTGFM$Total_Fraction=NovelTGFM$Total/a
+
+NovelTGVIS1 <- NovelTGVIS %>%
+  pivot_longer(cols = c(Total, Total_Fraction), 
+               names_to = c(".value", "Type"),
+               names_sep = "_") %>%
+  mutate(Type = ifelse(Type == "Fraction", "Proportion", "Number"))
+NovelTGVIS1$Type[is.na(NovelTGVIS1$Type)]="Number"
+NovelTGVIS1$Method="TGVIS"
+NovelTGFM1 <- NovelTGFM %>%
+  pivot_longer(cols = c(Total, Total_Fraction), 
+               names_to = c(".value", "Type"),
+               names_sep = "_") %>%
+  mutate(Type = ifelse(Type == "Fraction", "Proportion", "Number"))
+NovelTGFM1$Type[is.na(NovelTGFM1$Type)]="Number"
+NovelTGFM1$Method="TGFM"
+Novel=rbind(NovelTGVIS1,NovelTGFM1)
+Novel$Method=ordered(Novel$Method,levels=c("TGVIS","TGFM"))
+plot3=ggplot(data = Novel, aes(x = Total, y = Trait,fill=Method)) +
+  geom_bar(stat = "identity", position = position_dodge(),color="grey30") +
+  facet_wrap(~Type, scales = "free_x", ncol = 2) +
+  xlab("number of direct causal variants") +
+  theme(axis.text.y = element_text(size = rel(0.9)),
+        axis.title.y = element_blank(),
+        legend.position = c(0.37, 0.01),
+        legend.justification = c(0.37, 0.01),
+        legend.title = element_blank(),
+        panel.background = element_blank(),  panel.grid = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1))+
+  scale_fill_manual(values = c("#008c9e", "#f9c00c"))
+

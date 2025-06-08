@@ -1,0 +1,26 @@
+{
+    "id": "520D1C4E",
+    "path": "~/TGVIS_Shiny/app.R",
+    "project_path": "app.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1749180733256.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "454,20",
+        "scrollLine": "16"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1749411969,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1749411969887,
+    "read_only": false,
+    "read_only_alternatives": []
+}

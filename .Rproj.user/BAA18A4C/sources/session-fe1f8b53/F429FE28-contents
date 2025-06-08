@@ -1,0 +1,318 @@
+library(data.table)
+library(dplyr)
+library(ARTP2)
+library(tidyr)
+library(glue)
+library(MendelianRandomization)
+library(CppMatrix)
+library(stringr)
+library(Matrix)
+library(TGVIS)
+rm(list=ls())
+setwd("~/MR_CGTS")
+source("~/MR_CGTS/basicfunction.R")
+source("~/Mr.Jones/functions.R")
+######################### load the basic data ##########################
+MAPS=fread("/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/LDpanel/ukbEUR_Imputed/snp.info")%>%dplyr::select(CHR=Chrom,BP=PhysPos,SNP=ID,A1,A2,Freq=A1Freq)
+variant=arrow::read_parquet("~/1000G/9M_with_Freq.parquet")
+ind=fread("~/MR_CGTS/CAD_analysis/plinkfile/CAD_SBayesRC.clumped")
+ind=ind[,c("SNP","CHR","BP","P")]
+indcluster=cluster_snps(ind,window_size=1.1e6)
+indcluster$MarkerName=paste0(indcluster$CHR,":",indcluster$BP,seq="")
+CAD=fread("/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/SBayesRC/CAD/CAD.ma")%>%dplyr::select(SNP,A1,A2,BETA=b,SE=se,N)%>%mutate(Zscore=BETA/SE)%>%setDT(.)
+CAD$CHR=MAPS$CHR;CAD$BP=MAPS$BP
+CAD=CAD%>%dplyr::select(SNP,CHR,BP,A1,A2,Zscore,N)%>%setkey(.,SNP)
+CAD=TGVIS::allele_harmonise(variant[,c("SNP","A1","A2")],CAD)
+NCAD=median(CAD$N)
+susieselect=susieRsquare=susieselect.inf=susieRsquare.inf=ctwasselect=ctwasRsquare=tgfmselect=tgfmRsquare=list()
+iii=1
+CHRScranned=0
+
+sqtlpath="/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/GTEx_All/GTEx_sQTL_v10/"
+sqtltissue=readRDS("~/MR_CGTS/sQTL_file_v10.rds");
+eqtlpath="/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/GTEx_All/GTEx_eQTL_v10/"
+eqtltissue=readRDS("~/MR_CGTS/eQTL_file_v10.rds")
+apaqtlpath="/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/GTEx_All/GTEx_apaQTL_v10/"
+apaqtltissue=readRDS("~/MR_CGTS/sQTL_file_v10.rds")
+
+#susieselect.inf=readRDS(glue("~/MR_CGTS/CAD_analysis/Refine/susieselect_inf.rds"))
+#susieRsquare.inf=readRDS(glue("~/MR_CGTS/CAD_analysis/Refine/susieRsquare_inf.rds"))
+#tgfmselect=readRDS(glue("~/MR_CGTS/CAD_analysis/Refine/tgfmselect.rds"))
+#tgfmRsquare=readRDS(glue("~/MR_CGTS/CAD_analysis/Refine/tgfmRsquare.rds"))
+#iii=length(susieselect.inf)
+#CHRScranned=do.call(rbind,tgfmselect)$CHR%>%unique(.)
+
+###################
+for(Chr in setdiff(indcluster$CHR,CHRScranned)){
+
+tissuesGene=list()
+indCHR=indcluster[which(indcluster$CHR==Chr),]
+if(Chr==6){
+indCHR=remove_mhc_region(indCHR)
+}
+sQTLmapping=open_v10_datasets(path=sqtlpath,tissuelist=sqtltissue,Chr=Chr)
+eQTLmapping=open_v10_datasets(path=eqtlpath,tissuelist=eqtltissue,Chr=Chr)
+#GeneListChr=readRDS(glue("~/MR_CGTS/CAD_analysis/UVMR/UVMR_{Chr}.rds")) %>% Forcerbind(.) 
+#GeneListChr=unique(GeneListChr$Variable[which(GeneListChr$ivwP<0.05|GeneListChr$rankP<0.05)])
+
+###################
+for(BPi in 1:length(indCHR$SNP)){
+
+t1=Sys.time()
+CADChrBP=subgwas(CAD,indCHR[BPi,],winsize=1.1e6)%>%setkey(.,SNP)
+AAAA<-load_xQTL(snpvec=CADChrBP$SNP,datasets=eQTLmapping)
+AAA<-load_xQTL(snpvec=CADChrBP$SNP,datasets=sQTLmapping)
+AAAA<-rbind(AAA, AAAA)
+AAAA=na.omit(AAAA)
+remove(AAA)
+t2=Sys.time()
+time_diff <- difftime(t2, t1, units = "secs")
+print(paste0("Load data: ", round(time_diff, 2), " ", attr(time_diff, "units")))
+error_occurred1 <- FALSE
+
+tryCatch({
+AAAA=allele_harmonise(ref_panel=variant[,c("SNP","A1","A2")],gwas_data=AAAA)
+AAAA$P=pchisq(AAAA$Zscore^2,1,lower.tail=F)
+setDT(AAAA)
+setkey(AAAA,SNP)
+AAAA <- AAAA[CADChrBP, nomatch=0]
+setnames(AAAA,"i.Zscore","Zscore.y")
+setnames(AAAA,"Zscore","Zscore.x")
+mean_values <- AAAA %>%  group_by(Tissue) %>% summarise(mean_N = mean(N, na.rm = TRUE)) %>% pull(mean_N, name = Tissue)
+############ Select Candidate for Exposure ###############
+A=AAAA %>% dplyr::select(SNP,P)
+A <- A[, .SD[which.min(P)], by = SNP]
+A=A[which(A$P<5e-4),]
+write.table(A,glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt"),quote=F, sep="\t", row.name=F)
+setwd("~/Plink")
+oo=system(glue("./plink --bfile /mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr} --clump ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt --clump-field P  --clump-kb 1000 --clump-p1 1e-5 --clump-p2 1e-5 --clump-r2 0.64 --out ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}"),intern = T)
+setwd("~/MR_CGTS/")
+plinkfile=fread(glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+system(glue("rm ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+plinkfile=plinkfile[,"SNP"]
+############ Select Candidate for Outcome ###############
+#A1 <- CADChrBP[which(CADChrBP$SNP%in%unique(AAAA$SNP)),];A1$P=pchisq(A1$Zscore^2,1,lower.tail=F);A1=A1[,c("SNP","P")];A1=A1[which(A1$P<min(5e-8,quantile(A1$P,0.1))),]
+#write.table(A1,glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt"),quote=F, sep="\t", row.name=F)
+##setwd("~/Plink")
+#oo=system(glue("./plink --bfile /mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr} --clump ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt --clump-field P  --clump-kb 1000 --clump-p1 5e-8 --clump-p2 5e-8 --clump-r2 0.5 --out ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}"),intern = T)
+#setwd("~/MR_CGTS/")
+#plinkfile1=fread(glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+#system(glue("rm ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+#plinkfile1=plinkfile1[,"SNP"]
+############ Combine Them ###############
+#A=data.frame(SNP=unique(c(plinkfile$SNP,plinkfile1$SNP)))
+#A$P=0.05
+#write.table(A,glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt"),quote=F, sep="\t", row.name=F)
+#setwd("~/Plink")
+#oo=system(glue("./plink --bfile /mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr} --clump ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.txt --clump-field P  --clump-kb 1000 --clump-p1 1e-1 --clump-p2 1e-1 --clump-r2 0.5 --out ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}"),intern = T)
+#setwd("~/MR_CGTS/")
+#plinkfile=fread(glue("~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+#system(glue("rm ~/MR_CGTS/CAD_analysis/plinkfile/UVsQTL_{Chr}.clumped"))
+#plinkfile=plinkfile[,"SNP"]
+#AA=merge(AAAA,plinkfile,by="SNP")
+AA=AAAA
+rsid=plinkfile$SNP
+geno=read.bed(bed=glue::glue('/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr}.bed'),bim=glue::glue('/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr}.bim'),fam=glue::glue('/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/NealeReference/chr{Chr}.fam'),sel.snps=rsid)
+
+for(i in 1:ncol(geno)){
+geno[is.na(geno[,i]),i]=mean(geno[!is.na(geno[,i]),i])
+if(i %% 100==0) print(i)
+}
+R0=matrixCor(as.matrix(geno))
+R0[is.na(R0)]=0;diag(R0)=1
+R0=poet.shrinkage(R0)
+R0=R0/2+t(R0)/2
+genosnp=colnames(geno)
+rownames(R0)=colnames(R0)=genosnp
+
+TS=unique(AA$Variable)
+NN <- AA[, .(NN = median(N)), by = Variable][Variable %in% TS, NN]
+names(NN)=TS
+M=Zmatrix(AA[,c("SNP","Variable","Zscore.x")])
+M=M[genosnp,]
+M=demissing(M,rowfirst = F,rowthres = 0.95,colthres = 0.95)
+#M=demissing(M,rowfirst = F,rowthres = 0.95,colthres = 0.95)
+#M=demissing(M,rowfirst = F,rowthres = 0.95,colthres = 0.9)
+#M=demissing(M,rowfirst = F,rowthres = 0.95,colthres = 0.9)
+NN=NN[colnames(M)]
+orderM=order(colnames(M))
+genosnp=rownames(M)
+R0=R0[genosnp,genosnp]
+M1=as.matrix(M[genosnp,]);M1[is.na(M1)]=0
+NN=NN[colnames(M1)]
+
+t1=Sys.time()
+fiteQTL=eQTLmapping_susie(bX=M1,LD=R0,Nvec=NN,L=5,pip.min=0.25,pip.thres=0.5)
+M11=fiteQTL
+ind11=which(colSums(abs(M11))==0)
+M11=M11[,-ind11]
+M1=M1[,-ind11]
+NN=NN[colnames(M11)]
+t2=Sys.time()
+time_diff <- difftime(t2, t1, units = "secs")
+print(paste0("eQTL Selection: ", round(time_diff, 2), " ", attr(time_diff, "units")))
+
+bY=AA[,c("SNP","Zscore.y")]
+bY=bY[!duplicated(bY$SNP),]
+rownames(bY)=bY$SNP
+bY=bY[genosnp,]
+Pratt.Adjust=1
+
+UVMR=matrix(0,ncol(M1),6)
+colnames(UVMR)=c("Variable","Type","ivwE","ivwP","rankE","rankP")
+UVMR=as.data.frame(UVMR);UVMR[,1]=colnames(M1);UVMR[,2]=AA$xQTL[match(UVMR[,1],AA$Variable)]
+UVMR[,c(4,6)]=1
+
+t1=Sys.time()
+for(JJ in 1:ncol(M11)){
+errorindicate <- 0
+tryCatch({
+bxx=M1[,JJ]
+indx=which(bxx!=0)
+bx=M11[indx,JJ]
+by=bY$Zscore.y[indx]
+bxx=bxx[indx]
+if(sum(bx!=0)==1){
+  pleiotropy.rm=which(bx!=0)
+}else{
+  pleiotropy.rm=NULL
+}
+fituni=mrjones.mcp.uv(by=by,bx=bx,LD=R0[indx,indx],pleiotropy.rm=pleiotropy.rm,tauvec=seq(3,21,by=3))
+fitSpredixcan=mrjones.mcp.uv(by=by,bx=bx,LD=R0[indx,indx],pleiotropy.rm=pleiotropy.rm,tauvec=100000)
+UVMR[JJ,3]=fitSpredixcan$theta
+UVMR[JJ,4]=pchisq(fitSpredixcan$theta^2/fitSpredixcan$covtheta,1,lower.tail=F)
+UVMR[JJ,5]=fituni$theta
+UVMR[JJ,6]=pchisq(fituni$theta^2/fituni$covtheta,1,lower.tail=F)
+}, error = function(e){
+errorindicate <- 1
+})
+if(errorindicate == 1) next
+}
+t2=Sys.time()
+time_diff <- difftime(t2, t1, units = "secs")
+print(paste0("Gene Screening: ", round(time_diff, 2), " ", attr(time_diff, "units")))
+UVMR$ivwQ=FDRestimation::p.fdr(UVMR$ivwP)$fdrs
+UVMR$rankQ=FDRestimation::p.fdr(UVMR$rankP)$fdrs
+tissuesGene[[iii]]=UVMR
+
+Genelist <- UVMR %>%
+mutate(pvthres = min(0.05, min(quantile(ivwQ, 0.5, na.rm = TRUE), quantile(rankQ+0.005, 0.5, na.rm = TRUE)))) %>%
+dplyr::filter(ivwP < pvthres | rankP < pvthres) %>%
+pull(Variable) %>%
+unique()
+
+M1=M1[,Genelist]
+M11=M11[,Genelist]
+bY=AA[,c("SNP","Zscore.y")]%>%as.data.frame(.)
+bY=bY[!duplicated(bY$SNP),]
+rownames(bY)=bY$SNP
+bY=bY[genosnp,]
+
+a=matrixsqrt(R0)
+TC=a$wi
+RC=a$w
+
+#################################################################
+#t1=Sys.time()
+#fittgfm=tgfm.sampling.version(by=bY$Zscore.y,bX=M1,LD=R0,Nvec=c(NCAD,NN[Genelist]),causal.sampling.time=100,eqtl.sampling.time=25,L.causal=10,pip.thres.causal=0.01)
+#theta.mrjones=c(fittgfm$theta[which(fittgfm$theta!=0)],fittgfm$gamma[which(fittgfm$gamma!=0)])
+#if(length(theta.mrjones)>0){
+#se.mrjones=c(fittgfm$theta.se[which(fittgfm$theta!=0)],fittgfm$gamma.se[which(fittgfm$gamma!=0)])
+#pip.mrjones=c(fittgfm$theta.pip[which(fittgfm$theta!=0)],fittgfm$gamma.pip[which(fittgfm$gamma!=0)])
+#pratt.mrjones=c(fittgfm$theta.pratt[which(fittgfm$theta!=0)],fittgfm$gamma.pratt[which(fittgfm$gamma!=0)])
+#cs.mrjones=c(fittgfm$theta.cs[which(fittgfm$theta!=0)],fittgfm$gamma.cs[which(fittgfm$gamma!=0)])
+#cs.pip.mrjones=c(fittgfm$theta.cs.pip[which(fittgfm$theta!=0)],fittgfm$gamma.cs.pip[which(fittgfm$gamma!=0)])
+#Cjoint=data.frame(Variable=names(theta.mrjones),estimate=theta.mrjones,se=se.mrjones,pip=pip.mrjones,pratt=pratt.mrjones,cs=cs.mrjones,cs.pip=cs.pip.mrjones)
+#Cjoint$Type=c(rep("Exposure",length(which(fittgfm$theta!=0))),rep("SNP",length(which(fittgfm$gamma!=0))))
+#Cjoint$CHR=Chr
+#Cjoint$BP=indCHR$BP[BPi]
+#Cjoint <- Cjoint %>% group_by(cs) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup()
+#Cjoint <- Cjoint %>% group_by(cs) %>% mutate(cs.pip = sum(pip)) %>% ungroup()
+#cs0=which(Cjoint$cs==0)
+#if(length(cs0)>0){
+#Cjoint$cs.pratt[cs0]=Cjoint$pratt[cs0]
+#Cjoint$cs.pip[cs0]=Cjoint$pip[cs0]
+#}
+#}else{
+#Cjoint=NULL
+#}
+#theta.mrjones=fittgfm$theta
+#gamma.mrjones=fittgfm$gamma
+#eta=c(matrixVectorMultiply(RC,c(matrixVectorMultiply(fittgfm$eX,theta.mrjones))))
+#y1=c(matrixVectorMultiply(TC,bY$Zscore.y))
+#pleiotropy=c(RC%*%gamma.mrjones)
+#Rsquare.tgfm=R2est.adjust(pleiotropy,y1,eta)*Pratt.Adjust
+#Cjoint$xQTL=Cjoint$Variable
+#if(sum(Cjoint$Type=="Exposure")>0){
+#Cjoint$xQTL[which(Cjoint$Type=="Exposure")]=get_nonzero_rows(fittgfm$eX,Cjoint$Variable[which(Cjoint$Type=="Exposure")])$NonzeroRows
+#}
+#row.names(Cjoint)=NULL
+#Cjoint=Cjoint%>%dplyr::select(Variable,cs,cs.pip,cs.pratt,xQTL,CHR,BP,Type,estimate,se,pip,pratt)%>%arrange(.,cs,Type,Variable)
+#Cjoint$pratt=Cjoint$pratt*Pratt.Adjust
+#Cjoint$cs.pratt=Cjoint$cs.pratt*Pratt.Adjust
+#Rsquare.tgfm$Adjust=Pratt.Adjust
+#print(Cjoint)
+#print(Rsquare.tgfm)
+#t2=Sys.time()
+#time_diff <- difftime(t2, t1, units = "secs")
+#print(paste0("TGFM: ", round(time_diff, 2), " ", attr(time_diff, "units")))
+#tgfmselect[[iii]]=Cjoint
+#tgfmRsquare[[iii]]=Rsquare.tgfm
+
+#######################################################################################
+t1=Sys.time()
+fitmrjones=TGVIS::tgvis(by=bY$Zscore.y,bXest=M11,LD=R0,Noutcome=NCAD,pleiotropy.rm=findUniqueNonZeroRows(M11),pip.min=0.05,varinf.upper.boundary=0.15,eigen.thres=1)
+t2=Sys.time()
+time_diff <- difftime(t2, t1, units = "secs")
+print(paste0("MR.Jones_Inf: ", round(time_diff, 2), " ", attr(time_diff, "units")))
+theta.mrjones=c(fitmrjones$theta[which(fitmrjones$theta!=0)],fitmrjones$gamma[which(fitmrjones$gamma!=0)])
+if(length(theta.mrjones)>0){
+se.mrjones=c(fitmrjones$theta.se[which(fitmrjones$theta!=0)],fitmrjones$gamma.se[which(fitmrjones$gamma!=0)])
+pip.mrjones=c(fitmrjones$theta.pip[which(fitmrjones$theta!=0)],fitmrjones$gamma.pip[which(fitmrjones$gamma!=0)])
+pratt.mrjones=c(fitmrjones$theta.pratt[which(fitmrjones$theta!=0)],fitmrjones$gamma.pratt[which(fitmrjones$gamma!=0)])
+cs.mrjones=c(fitmrjones$theta.cs[which(fitmrjones$theta!=0)],fitmrjones$gamma.cs[which(fitmrjones$gamma!=0)])
+cs.pip.mrjones=c(fitmrjones$theta.cs.pip[which(fitmrjones$theta!=0)],fitmrjones$gamma.cs.pip[which(fitmrjones$gamma!=0)])
+Ajoint=data.frame(Variable=names(theta.mrjones),estimate=theta.mrjones,se=se.mrjones,pip=pip.mrjones,pratt=pratt.mrjones,cs=cs.mrjones,cs.pip=cs.pip.mrjones)
+Ajoint$Type=c(rep("Exposure",length(which(fitmrjones$theta!=0))),rep("SNP",length(which(fitmrjones$gamma!=0))))
+Ajoint$CHR=Chr
+Ajoint$BP=indCHR$BP[BPi]
+Ajoint <- Ajoint %>% group_by(cs) %>% mutate(cs.pratt = sum(pratt)) %>% ungroup()
+}else{
+Ajoint=NULL
+}
+theta.mrjones=fitmrjones$theta
+gamma.mrjones=fitmrjones$gamma
+eta=c(matrixVectorMultiply(RC,c(matrixVectorMultiply(M11,theta.mrjones))))
+y1=c(matrixVectorMultiply(TC,bY$Zscore.y))
+pleiotropy=c(RC%*%gamma.mrjones)
+infeffect=c(RC%*%fitmrjones$upsilon)
+Rsquare.mrjones=R2est.inf(pleiotropy,infeffect,y1,eta)*Pratt.Adjust
+Ajoint$xQTL=Ajoint$Variable
+if(sum(Ajoint$Type=="Exposure")>0){
+Ajoint$xQTL[which(Ajoint$Type=="Exposure")]=get_nonzero_rows(M11,Ajoint$Variable[which(Ajoint$Type=="Exposure")])$NonzeroRows
+}
+row.names(Ajoint)=NULL
+Ajoint=Ajoint%>%dplyr::select(Variable,cs,cs.pip,cs.pratt,xQTL,CHR,BP,Type,estimate,se,pip,pratt)%>%arrange(.,cs,Type,Variable)
+Ajoint$pratt=Ajoint$pratt*Pratt.Adjust
+Ajoint$cs.pratt=Ajoint$cs.pratt*Pratt.Adjust
+Rsquare.mrjones$Adjust=Pratt.Adjust
+susieselect.inf[[iii]]=Ajoint
+susieRsquare.inf[[iii]]=Rsquare.mrjones
+print(Ajoint)
+print(Rsquare.mrjones[c(1,3,5,7)])
+print(c(Chr,BPi))
+iii=iii+1
+
+},error = function(e) {
+print(paste("Caught an error in iteration", Chr, ": ", BPi,"- Error message:/n", conditionMessage(e)))
+error_occurred1 = TRUE
+})
+if(error_occurred1) next
+}
+saveRDS(susieselect.inf,glue("~/MR_CGTS/CAD_analysis/MVMR/v10_susieselect_inf.rds"))
+saveRDS(susieRsquare.inf,glue("~/MR_CGTS/CAD_analysis/MVMR/v10_susieRsquare_inf.rds"))
+saveRDS(tgfmselect,glue("~/MR_CGTS/CAD_analysis/MVMR/v10_tgfmselect.rds"))
+saveRDS(tgfmRsquare,glue("~/MR_CGTS/CAD_analysis/MVMR/v10_tgfmRsquare.rds"))
+saveRDS(tissuesGene,glue("~/MR_CGTS/CAD_analysis/UVMR/v10_UVMR_{Chr}.rds"))
+}
+

@@ -1,0 +1,23 @@
+Trait=c("PP","ALB","AAA","ALT","AST","Baso","Bilirubin","BMI","BUN","CAD","Cystatin","DBP","Eosino",
+        "FPG","HB","HBA1C","HDL","LDL","Mono","Neutro","PLA","RBC","SBP","T2D",
+        "TCh","TG","UA","VTE","WBC","sP","QTI","JTI","QRS","AF","ALP","HEG","eGFR","LYM","GGT","FFratio","APOA1","APOB","SHBG","PLE2","PLE1")
+UVMR=list()
+for(i in 1:45){
+  W=NULL
+  for(j in 1:22){
+    tryCatch({
+    w=readRDS(glue("~/MR_CGTS/{Trait[i]}_analysis/UVMR/UVMR_{j}.rds"))%>%do.call(rbind,.)
+    w=w[which(w$ivwP<0.05|w$rankQ<0.05),]
+    w=w%>%dplyr::select(Variable,Genetype=Type,P=ivwP)
+    w$Genetype=ifelse(w$Genetype=="eQTL","eGene","sGene")
+    },error=function(e){
+    w=NULL
+    })
+    W=rbind(W,w)
+  }
+  W$Trait=Trait[i]
+  UVMR[[i]]=W
+  print(Trait[i])
+}
+UVMR=do.call(rbind,UVMR)
+saveRDS(UVMR,"~/MR_CGTS/UVMRlist.rds")

@@ -1,0 +1,158 @@
+find_nearest_coding_gene_edb <- function(chr, bp, edb = EnsDb.Hsapiens.v79) {
+gr_genes <- genes(edb, filter = list(SeqNameFilter(chr), GeneBiotypeFilter("protein_coding")))
+TSS <- ifelse(strand(gr_genes) == "+", start(gr_genes), end(gr_genes))
+dist <- abs(TSS - bp)
+idx <- which.min(dist)
+nearest <- gr_genes[idx]
+return(data.frame(
+gene_id = nearest$gene_id,
+gene_name = nearest$gene_name,
+seqnames = as.character(seqnames(nearest)),
+TSS = TSS[idx],
+strand = as.character(strand(nearest)),
+distance = dist[idx]
+))
+}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(EnsDb.Hsapiens.v79)
+library(locuszoomr)
+library(ggplot2)
+library(ggrepel)
+library(glue)
+options(bitmapType = "cairo")
+source("~/MR_CGTS/basicfunction.R")
+source("~/Mr.Jones/functions.R")
+MAPS=fread("/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/LDpanel/ukbEUR_Imputed/snp.info")%>%dplyr::select(CHR=Chrom,BP=PhysPos,SNP=ID,A1,A2,Freq=A1Freq)
+variant=arrow::read_parquet("~/1000G/7M_BP_3738.parquet")
+ind=fread("~/MR_CGTS/BMI_analysis/plinkfile/BMI_SBayesRC.clumped")
+ind=ind[,c("SNP","CHR","BP","P")]
+ind=merge(ind,variant[,c("SNP","BP38")],by="SNP")
+ind$BP=NULL
+ind=dplyr::select(ind,SNP,CHR,BP=BP38,P)
+indcluster=cluster_snps(ind,window_size=1e6)
+indcluster$MarkerName=paste0(indcluster$CHR,":",indcluster$BP,seq="")
+BMI=fread("/mnt/vstor/SOM_EPBI_XXZ10/yxy1234/SBayesRC/BMI/BMI.ma")%>%dplyr::select(SNP,A1,A2,BETA=b,SE=se,N)%>%mutate(Zscore=BETA/SE)%>%setDT(.)
+BMI$CHR=MAPS$CHR;BMI$BP=MAPS$BP
+BMI=BMI%>%dplyr::select(SNP,CHR,A1,A2,Zscore,N)
+BMI=merge(BMI,variant[,c("SNP","BP38")],by="SNP")
+BMI=BMI%>%dplyr::select(SNP,CHR,BP=BP38,A1,A2,Zscore,N)
+indcluster$Mapping <- NA
+for (i in seq_len(nrow(indcluster))) {
+  chr_i <- indcluster$CHR[i]
+  bp_i <- indcluster$BP[i]
+  
+  result <- tryCatch({
+    nearest_gene <- find_nearest_coding_gene_edb(chr = chr_i, bp = bp_i)
+    nearest_gene$gene_name
+  }, error = function(e) {
+  })
+  indcluster$Mapping[i] <- result
+}
+saveRDS(indcluster,"~/TGVIS_Shiny/BMI/Blockinfo.rds")
+
+ind=c()
+for(i in 1:nrow(indcluster)){
+s=which(variant$CHR==indcluster$CHR[i]&abs(variant$BP38-indcluster$BP[i])<1e6)
+ind=c(s,ind)
+}
+BMI_Sub=BMI[ind,]
+BMI_Sub$P=pchisq(BMI_Sub$Zscore,1,lower.tail=F)
+BMI_Sub=BMI_Sub%>%arrange(.,CHR,BP)
+
+w=readRDS("~/TGVIS_Shiny/BMI/FineMap.rds")
+GWAS=BMI_Sub
+Blockinfo=indcluster
+window=1e6
+ens_db=EnsDb.Hsapiens.v79
+Locus=unique(w$Locus)
+colors=RColorBrewer::brewer.pal(n = 11, name = "RdBu")
+colors=colors[c(2,10,3,9,4,8,5,7,6)]
+GWAS$P <- pchisq(GWAS$Zscore^2, df = 1, lower.tail = FALSE)
+GWAS=dplyr::filter(GWAS,P<0.05)
+
+
+for(i in 1:length(Locus)){
+parts <- strsplit(Locus[i], ":")[[1]]
+Chr <- as.integer(parts[1])
+POS38 <- as.integer(parts[2])
+
+in_block <- Blockinfo$CHR == Chr & abs(Blockinfo$BP - POS38) <= window
+block_row <- Blockinfo[which(in_block)[1], ]
+gene <- block_row$Mapping
+
+summary_data <- data.frame(
+chrom = GWAS$CHR,
+pos = GWAS$BP,
+rsid = GWAS$SNP,
+p = GWAS$P,
+stringsAsFactors = FALSE
+)
+
+loc <- locus(data = summary_data,
+           gene = gene,
+           flank = 1e6,
+           ens_db = ens_db)
+
+df <- loc$data
+df$fill <- ifelse(df$p < 5e-8, "sig", "non_sig")
+df$fill[which(df$chrom==Chr&df$pos==POS38)]="leading"
+df$fill=ordered(df$fill,levels=c("non_sig","sig","leading"))
+df$label <- ifelse(df$fill == "leading", 
+                   paste0(df$rsid, " (", df$chrom, ":", df$pos,")"), 
+                   NA)
+plot1=ggplot() +
+  # 非 leading SNP 点
+  geom_point(
+    data = subset(df, fill != "leading"),
+    aes(x = pos / 1e6, y = -log10(p), fill = fill),
+    size = 1.8, color = "grey30", shape = 21
+  ) +
+  # leading SNP 单独画，确保在最上方
+  geom_point(
+    data = subset(df, fill == "leading"),
+    aes(x = pos / 1e6, y = -log10(p), fill = fill),
+    size = 1.8, color = "grey30", shape = 21
+  ) +
+  # 标签只对 leading SNP 显示
+  geom_label_repel(
+    data = subset(df, fill == "leading"),
+    aes(x = pos / 1e6, y = -log10(p), label = label),
+    size = 3,
+    box.padding = 0.25,
+    point.padding = 0.15,
+    segment.color = "black",
+    segment.size = 0.3,
+    min.segment.length = 0,
+    nudge_y = 1
+  ) +
+  scale_fill_manual(
+    values = c(
+      "non_sig" = "gray70",
+      "sig" = "#41D3BD",
+      "leading" = "red"
+    ),
+    guide = "none"
+  ) +
+  scale_x_continuous(limits = loc$xrange / 1e6) +
+  xlab(NULL) +
+  ylab(bquote("-" ~ log[10] ~ "p-values")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(color = "black"),
+    legend.title = element_blank(),
+    legend.position = c(0.01, 0.01),
+    legend.justification = c(0.01, 0.01),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+png(glue("~/TGVIS_Figure/BMI/Locuszoom_{Locus[i]}.png"),width=10,height=8,units="in",res=200)
+print(gg_addgenes(plot1,loc,maxrows=7,gene_col = '#004e66', exon_col = '#004e66', exon_border = '#004e66'))
+dev.off()
+}
+
