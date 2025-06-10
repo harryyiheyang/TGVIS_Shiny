@@ -5,6 +5,6 @@ account: ovlwff-yihe-yang
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 14892757
-bundleId: 10419758
+bundleId: 10431788
 url: https://ovlwff-yihe-yang.shinyapps.io/tgvis_shiny/
 version: 1
